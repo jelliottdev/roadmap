@@ -1,6 +1,9 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Plus, Copy, Search, Pencil, Trash2, LayoutGrid, Check } from "lucide-react";
+import {
+  Plus, Copy, Search, Pencil, Trash2, LayoutGrid,
+  Check, ArrowLeft, ArrowRight, ChevronsLeft,
+} from "lucide-react";
 import { useApp, RoadmapItem, Status, Priority } from "../context/AppContext";
 import { ItemModal } from "./ItemModal";
 
@@ -10,6 +13,8 @@ const STATUS_CONFIG: { key: Status; label: string; color: string }[] = [
   { key: "completed", label: "Completed", color: "#22c55e" },
   { key: "cancelled", label: "Cancelled", color: "#ef4444" },
 ];
+
+const STATUS_ORDER: Status[] = ["planned", "in_progress", "completed", "cancelled"];
 
 const PRIORITY_COLORS: Record<Priority, string> = {
   high: "#ef4444",
@@ -26,7 +31,7 @@ const PRIORITY_LABELS: Record<Priority, string> = {
 const QUARTERS = ["All", "Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025", "Q1 2026", "Q2 2026"];
 
 export function Dashboard() {
-  const { user, team, items, logout, loading } = useApp();
+  const { user, team, items, logout, loading, updateItem, deleteItem } = useApp();
   const navigate = useNavigate();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<RoadmapItem | null>(null);
@@ -41,7 +46,13 @@ export function Dashboard() {
 
   // Delete confirmation
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const { deleteItem } = useApp();
+
+  // Drag & drop
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverColumn, setDragOverColumn] = useState<Status | null>(null);
+
+  // Column collapse
+  const [collapsedCols, setCollapsedCols] = useState<Set<Status>>(new Set());
 
   useEffect(() => {
     if (!user || !team) navigate("/");
@@ -88,7 +99,55 @@ export function Dashboard() {
     setDeleteConfirm(null);
   };
 
+  const toggleCollapse = (status: Status) => {
+    setCollapsedCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  };
+
+  // Drag handlers
+  const handleDragStart = (id: string) => setDraggingId(id);
+
+  const handleDragEnd = () => {
+    setDraggingId(null);
+    setDragOverColumn(null);
+  };
+
+  const handleDragOver = (e: React.DragEvent, status: Status) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverColumn !== status) setDragOverColumn(status);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetStatus: Status) => {
+    e.preventDefault();
+    if (draggingId) {
+      const item = items.find((i) => i.id === draggingId);
+      if (item && item.status !== targetStatus) {
+        updateItem(draggingId, { status: targetStatus });
+      }
+    }
+    setDraggingId(null);
+    setDragOverColumn(null);
+  };
+
+  // Quick move — shift a card to the adjacent status column
+  const moveItem = (id: string, direction: "prev" | "next") => {
+    const item = items.find((i) => i.id === id);
+    if (!item) return;
+    const idx = STATUS_ORDER.indexOf(item.status);
+    const newIdx = direction === "prev" ? idx - 1 : idx + 1;
+    if (newIdx >= 0 && newIdx < STATUS_ORDER.length) {
+      updateItem(id, { status: STATUS_ORDER[newIdx] });
+    }
+  };
+
   if (!user || !team) return null;
+
+  const isDraggingAny = draggingId !== null;
 
   return (
     <div className="flex flex-col h-screen" style={{ backgroundColor: "#0a0a0a", fontFamily: "Inter, sans-serif" }}>
@@ -107,7 +166,10 @@ export function Dashboard() {
 
         <div className="flex items-center gap-4">
           {/* Join code pill */}
-          <div className="flex items-center gap-2" style={{ backgroundColor: "#1e1e1e", border: "1px solid #2a2a2a", borderRadius: 20, padding: "4px 12px", fontSize: 13 }}>
+          <div
+            className="flex items-center gap-2"
+            style={{ backgroundColor: "#1e1e1e", border: "1px solid #2a2a2a", borderRadius: 20, padding: "4px 12px", fontSize: 13 }}
+          >
             <span style={{ color: "#888888" }}>Code:</span>
             <span style={{ color: "#f5f5f5", fontFamily: "'SF Mono', 'Fira Code', monospace", letterSpacing: "0.05em" }}>{team.joinCode}</span>
             <button
@@ -204,87 +266,193 @@ export function Dashboard() {
 
       {/* Kanban Board */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden" style={{ padding: 16 }}>
-        <div className="flex gap-4 h-full" style={{ minWidth: "fit-content" }}>
-          {columns.map((col) => (
-            <div key={col.key} className="flex flex-col" style={{ width: 300, minWidth: 300 }}>
-              {/* Column Header */}
-              <div className="flex items-center justify-between mb-3 px-1">
-                <div className="flex items-center gap-2">
-                  <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: col.color }} />
-                  <span style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", color: col.color, letterSpacing: "0.03em" }}>
+        <div className="flex gap-3 h-full" style={{ minWidth: "fit-content" }}>
+          {columns.map((col) => {
+            const isCollapsed = collapsedCols.has(col.key);
+            const isDropTarget = dragOverColumn === col.key && isDraggingAny;
+            const draggingItem = isDraggingAny ? items.find((i) => i.id === draggingId) : null;
+            const sameColumn = draggingItem?.status === col.key;
+
+            // Collapsed: narrow vertical strip
+            if (isCollapsed) {
+              return (
+                <div
+                  key={col.key}
+                  onClick={() => toggleCollapse(col.key)}
+                  title="Click to expand"
+                  style={{
+                    width: 44,
+                    minWidth: 44,
+                    backgroundColor: isDropTarget ? `${col.color}18` : "#141414",
+                    border: `1px solid ${isDropTarget ? col.color : "#2a2a2a"}`,
+                    borderRadius: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "14px 0",
+                    cursor: "pointer",
+                    transition: "border-color 0.15s, background-color 0.15s",
+                  }}
+                  onDragOver={(e) => handleDragOver(e, col.key)}
+                  onDragLeave={() => setDragOverColumn(null)}
+                  onDrop={(e) => handleDrop(e, col.key)}
+                >
+                  <span
+                    style={{
+                      writingMode: "vertical-rl",
+                      textOrientation: "mixed",
+                      transform: "rotate(180deg)",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      color: col.color,
+                      letterSpacing: "0.06em",
+                      userSelect: "none",
+                    }}
+                  >
                     {col.label}
                   </span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: "#888888",
+                      backgroundColor: "#1e1e1e",
+                      borderRadius: 10,
+                      padding: "2px 5px",
+                      minWidth: 20,
+                      textAlign: "center",
+                    }}
+                  >
+                    {col.items.length}
+                  </span>
                 </div>
-                <span
+              );
+            }
+
+            return (
+              <div
+                key={col.key}
+                className="flex flex-col"
+                style={{ width: 300, minWidth: 300 }}
+                onDragOver={(e) => handleDragOver(e, col.key)}
+                onDragLeave={() => setDragOverColumn(null)}
+                onDrop={(e) => handleDrop(e, col.key)}
+              >
+                {/* Column Header — click to collapse */}
+                <div className="flex items-center justify-between mb-3 px-1">
+                  <button
+                    onClick={() => toggleCollapse(col.key)}
+                    title="Collapse column"
+                    className="flex items-center gap-2"
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                  >
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: col.color }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", color: col.color, letterSpacing: "0.03em" }}>
+                      {col.label}
+                    </span>
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "#888888",
+                        backgroundColor: "#1e1e1e",
+                        borderRadius: 10,
+                        padding: "1px 8px",
+                        minWidth: 22,
+                        textAlign: "center",
+                      }}
+                    >
+                      {col.items.length}
+                    </span>
+                    <button
+                      onClick={() => toggleCollapse(col.key)}
+                      title="Collapse column"
+                      style={{ background: "none", border: "none", color: "#555", cursor: "pointer", padding: 2, display: "flex", borderRadius: 4, transition: "color 0.15s" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = "#888")}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = "#555")}
+                    >
+                      <ChevronsLeft size={13} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Column Body */}
+                <div
+                  className="flex-1 overflow-y-auto pr-1"
                   style={{
-                    fontSize: 12,
-                    color: "#888888",
-                    backgroundColor: "#1e1e1e",
-                    borderRadius: 10,
-                    padding: "1px 8px",
-                    minWidth: 22,
-                    textAlign: "center",
+                    paddingBottom: 8,
+                    borderRadius: 8,
+                    border: isDropTarget && !sameColumn ? `2px dashed ${col.color}` : "2px solid transparent",
+                    backgroundColor: isDropTarget && !sameColumn ? `${col.color}0d` : "transparent",
+                    transition: "border-color 0.12s, background-color 0.12s",
+                    padding: isDropTarget && !sameColumn ? "6px 6px 8px" : "0 0 8px",
                   }}
                 >
-                  {col.items.length}
-                </span>
-              </div>
+                  <div className="flex flex-col gap-2.5">
+                    {loading ? (
+                      <>
+                        <SkeletonCard />
+                        <SkeletonCard />
+                        <SkeletonCard />
+                      </>
+                    ) : col.items.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-10">
+                        <LayoutGrid size={28} style={{ color: "#2a2a2a", marginBottom: 8 }} />
+                        <span style={{ fontSize: 13, color: isDraggingAny ? col.color : "#888888", transition: "color 0.15s" }}>
+                          {isDraggingAny ? "Drop here" : "No items yet"}
+                        </span>
+                      </div>
+                    ) : (
+                      col.items.map((item) => (
+                        <RoadmapCard
+                          key={item.id}
+                          item={item}
+                          statusColor={col.color}
+                          onEdit={() => openEditItem(item)}
+                          deleteConfirm={deleteConfirm}
+                          setDeleteConfirm={setDeleteConfirm}
+                          onDelete={() => handleDelete(item.id)}
+                          onDragStart={() => handleDragStart(item.id)}
+                          onDragEnd={handleDragEnd}
+                          isDragging={draggingId === item.id}
+                          onMoveLeft={() => moveItem(item.id, "prev")}
+                          onMoveRight={() => moveItem(item.id, "next")}
+                          canMoveLeft={STATUS_ORDER.indexOf(item.status) > 0}
+                          canMoveRight={STATUS_ORDER.indexOf(item.status) < STATUS_ORDER.length - 1}
+                        />
+                      ))
+                    )}
+                  </div>
 
-              {/* Column Body */}
-              <div className="flex-1 overflow-y-auto pr-1" style={{ paddingBottom: 8 }}>
-                <div className="flex flex-col gap-2.5">
-                  {loading ? (
-                    <>
-                      <SkeletonCard />
-                      <SkeletonCard />
-                      <SkeletonCard />
-                    </>
-                  ) : col.items.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-10">
-                      <LayoutGrid size={28} style={{ color: "#2a2a2a", marginBottom: 8 }} />
-                      <span style={{ fontSize: 13, color: "#888888" }}>No items yet</span>
-                    </div>
-                  ) : (
-                    col.items.map((item) => (
-                      <RoadmapCard
-                        key={item.id}
-                        item={item}
-                        statusColor={col.color}
-                        onEdit={() => openEditItem(item)}
-                        deleteConfirm={deleteConfirm}
-                        setDeleteConfirm={setDeleteConfirm}
-                        onDelete={() => handleDelete(item.id)}
-                      />
-                    ))
+                  {/* Add item ghost button */}
+                  {!loading && (
+                    <button
+                      onClick={() => openNewItem(col.key)}
+                      className="flex items-center justify-center gap-1.5 w-full mt-2.5"
+                      style={{
+                        height: 38,
+                        border: "1px dashed #2a2a2a",
+                        borderRadius: 8,
+                        backgroundColor: "transparent",
+                        color: "#888888",
+                        fontSize: 13,
+                        cursor: "pointer",
+                        fontFamily: "Inter, sans-serif",
+                        transition: "border-color 0.15s, color 0.15s",
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#3b82f6"; e.currentTarget.style.color = "#3b82f6"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#2a2a2a"; e.currentTarget.style.color = "#888888"; }}
+                    >
+                      <Plus size={14} />
+                      Add item
+                    </button>
                   )}
                 </div>
-
-                {/* Add item ghost button */}
-                {!loading && (
-                  <button
-                    onClick={() => openNewItem(col.key)}
-                    className="flex items-center justify-center gap-1.5 w-full mt-2.5"
-                    style={{
-                      height: 38,
-                      border: "1px dashed #2a2a2a",
-                      borderRadius: 8,
-                      backgroundColor: "transparent",
-                      color: "#888888",
-                      fontSize: 13,
-                      cursor: "pointer",
-                      fontFamily: "Inter, sans-serif",
-                      transition: "border-color 0.15s, color 0.15s",
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#3b82f6"; e.currentTarget.style.color = "#3b82f6"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#2a2a2a"; e.currentTarget.style.color = "#888888"; }}
-                  >
-                    <Plus size={14} />
-                    Add item
-                  </button>
-                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -325,13 +493,27 @@ interface CardProps {
   deleteConfirm: string | null;
   setDeleteConfirm: (id: string | null) => void;
   onDelete: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  isDragging: boolean;
+  onMoveLeft: () => void;
+  onMoveRight: () => void;
+  canMoveLeft: boolean;
+  canMoveRight: boolean;
 }
 
-function RoadmapCard({ item, statusColor, onEdit, deleteConfirm, setDeleteConfirm, onDelete }: CardProps) {
+function RoadmapCard({
+  item, statusColor, onEdit, deleteConfirm, setDeleteConfirm, onDelete,
+  onDragStart, onDragEnd, isDragging,
+  onMoveLeft, onMoveRight, canMoveLeft, canMoveRight,
+}: CardProps) {
   const [hovered, setHovered] = useState(false);
 
   return (
     <div
+      draggable
+      onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; onDragStart(); }}
+      onDragEnd={onDragEnd}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); if (deleteConfirm === item.id) setDeleteConfirm(null); }}
       style={{
@@ -340,11 +522,13 @@ function RoadmapCard({ item, statusColor, onEdit, deleteConfirm, setDeleteConfir
         borderRadius: 8,
         borderLeft: `3px solid ${statusColor}`,
         padding: 12,
-        cursor: "default",
-        transition: "border-color 0.15s",
+        cursor: isDragging ? "grabbing" : "grab",
+        opacity: isDragging ? 0.35 : 1,
+        transition: "border-color 0.15s, opacity 0.15s",
+        userSelect: "none",
       }}
     >
-      {/* Top row */}
+      {/* Top row: priority + category */}
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-1.5">
           <div style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: PRIORITY_COLORS[item.priority] }} />
@@ -403,10 +587,31 @@ function RoadmapCard({ item, statusColor, onEdit, deleteConfirm, setDeleteConfir
         </p>
       )}
 
-      {/* Bottom row */}
+      {/* Bottom row: quarter + quick-move + edit/delete */}
       <div className="flex items-center justify-between mt-3">
         <span style={{ fontSize: 12, color: "#888888" }}>{item.quarter}</span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
+          {/* Quick-move: only visible on hover */}
+          {hovered && canMoveLeft && (
+            <IconBtn
+              icon={<ArrowLeft size={13} />}
+              onClick={onMoveLeft}
+              hoverColor="#6366f1"
+              title="Move to previous column"
+            />
+          )}
+          {hovered && canMoveRight && (
+            <IconBtn
+              icon={<ArrowRight size={13} />}
+              onClick={onMoveRight}
+              hoverColor="#6366f1"
+              title="Move to next column"
+            />
+          )}
+          {/* Separator when quick-move buttons are showing */}
+          {hovered && (canMoveLeft || canMoveRight) && (
+            <span style={{ width: 1, height: 12, backgroundColor: "#2a2a2a", margin: "0 3px" }} />
+          )}
           <IconBtn icon={<Pencil size={14} />} onClick={onEdit} hoverColor="#3b82f6" />
           <div className="relative">
             <IconBtn
@@ -443,11 +648,19 @@ function RoadmapCard({ item, statusColor, onEdit, deleteConfirm, setDeleteConfir
   );
 }
 
-function IconBtn({ icon, onClick, hoverColor }: { icon: React.ReactNode; onClick: () => void; hoverColor: string }) {
+function IconBtn({
+  icon, onClick, hoverColor, title,
+}: {
+  icon: React.ReactNode;
+  onClick: () => void;
+  hoverColor: string;
+  title?: string;
+}) {
   const [h, setH] = useState(false);
   return (
     <button
       onClick={onClick}
+      title={title}
       onMouseEnter={() => setH(true)}
       onMouseLeave={() => setH(false)}
       style={{
